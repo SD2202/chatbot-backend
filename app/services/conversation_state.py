@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 class ConversationState(str, Enum):
     LANGUAGE_SELECTION = "language_selection"
     LOGIN = "login"
+    TRACKING_LOGIN_ID = "tracking_login_id"
+    WELCOME_SELECTION = "welcome_selection"
     LOGIN_NAME = "login_name"
     LOGIN_MOBILE = "login_mobile"
     LOGIN_AREA_WARD = "login_area_ward"
@@ -47,6 +49,7 @@ class ConversationManager:
                 "property_id": None,
                 "image_url": None,
                 "description": None,
+                "failed_attempts": 0,
                 "created_at": datetime.utcnow(),
                 "updated_at": datetime.utcnow()
             }
@@ -86,6 +89,7 @@ class ConversationManager:
             "property_id": None,
             "image_url": None,
             "description": None,
+            "failed_attempts": 0,
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }

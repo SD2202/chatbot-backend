@@ -57,6 +57,8 @@ class Complaint(Base):
     sub_issue = Column(String(100), nullable=True)
     description = Column(Text, nullable=True)
     image_url = Column(Text, nullable=True)
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
     status = Column(SQLEnum(ComplaintStatus), default=ComplaintStatus.PENDING, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

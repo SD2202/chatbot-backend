@@ -5,12 +5,13 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.core.config import settings
 from app.db.database import create_db_and_tables, seed_data, SessionLocal
-from app.db.models import PropertyTax
+from app.db.models import PropertyTax, Complaint, User, ComplaintStatus
 from app.services.whatsapp import whatsapp_service
 from app.services.conversation_router import ConversationRouter
 from app.services.pdf_service import generate_property_tax_pdf
 import logging
 import os
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -114,20 +115,32 @@ async def handle_whatsapp_message(request: Request):
                 # Handle image messages
                 elif message_type == "image":
                     image_id = message_data["image"]["id"]
-                    # In production, download image from WhatsApp API
-                    # For now, we'll use a placeholder URL
-                    image_url = f"https://graph.facebook.com/v18.0/{image_id}"
-                    logger.info(f"Processing image from {from_number}: {image_id}")
+                    logger.info(f"Received image ID: {image_id}")
                     
-                    # Process image through conversation router
-                    response_text = conversation_router.process_message(from_number, "", image_url=image_url)
-                    
-                    # Send response
-                    await whatsapp_service.send_text_message(from_number, response_text)
+                    # 1. Get media URL from Meta
+                    media_url = await whatsapp_service.get_media_url(image_id)
+                    if media_url:
+                        # 2. Download and save locally
+                        filename = f"{image_id}.jpg"
+                        save_path = os.path.join(settings.UPLOAD_DIR, filename)
+                        success = await whatsapp_service.download_media(media_url, save_path)
+                        
+                        if success:
+                            # Use local URL for processing
+                            local_url = f"/uploads/{filename}"
+                            response_text = conversation_router.process_message(from_number, "", image_url=local_url)
+                            await whatsapp_service.send_text_message(from_number, response_text)
+                        else:
+                            await whatsapp_service.send_text_message(from_number, "Error processing image. Please try again.")
+                    else:
+                        await whatsapp_service.send_text_message(from_number, "Could not retrieve image from WhatsApp.")
 
                 # Handle location messages
                 elif message_type == "location":
-                    location_data = message_data["location"]
+                    location_data = {
+                        "latitude": message_data["location"]["latitude"],
+                        "longitude": message_data["location"]["longitude"]
+                    }
                     logger.info(f"Processing location from {from_number}: {location_data}")
                     
                     # Process location through conversation router
@@ -181,6 +194,78 @@ async def get_property_tax_pdf(property_id: str):
     finally:
         db.close()
 
+@app.get("/api/complaints")
+async def get_complaints():
+    """Get all complaints with user details joined"""
+    db = SessionLocal()
+    try:
+        results = db.query(Complaint, User).join(User, Complaint.user_id == User.id).all()
+        
+        complaints_with_users = []
+        for complaint, user in results:
+            complaint_data = {
+                "id": complaint.id,
+                "complaint_id": complaint.complaint_id,
+                "user_id": complaint.user_id,
+                "login_id": complaint.login_id,
+                "category": complaint.category,
+                "sub_issue": complaint.sub_issue,
+                "description": complaint.description,
+                "image_url": complaint.image_url,
+                "latitude": complaint.latitude,
+                "longitude": complaint.longitude,
+                "status": complaint.status,
+                "created_at": complaint.created_at,
+                "user_name": user.name,
+                "user_mobile": user.mobile,
+                "user_area": user.area,
+                "user_ward": user.ward_number
+            }
+            complaints_with_users.append(complaint_data)
+        return complaints_with_users
+    finally:
+        db.close()
+
+@app.patch("/api/complaints/{complaint_id}/status")
+async def update_complaint_status(complaint_id: str, status: str):
+    """Update complaint status"""
+    logger.info(f"Updating complaint {complaint_id} status to {status}")
+    db = SessionLocal()
+    try:
+        complaint = db.query(Complaint).filter(Complaint.complaint_id == complaint_id.strip()).first()
+        if not complaint:
+            logger.error(f"Complaint {complaint_id} not found")
+            raise HTTPException(status_code=404, detail="Complaint not found")
+        
+        # Match enum Case
+        new_status = status.lower()
+        if new_status == "completed":
+            complaint.status = ComplaintStatus.RESOLVED
+        else:
+            complaint.status = ComplaintStatus.PENDING
+            
+        complaint.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(complaint)
+        logger.info(f"Successfully updated complaint {complaint_id} to {complaint.status}")
+        return {"message": "Status updated successfully", "status": complaint.status}
+    except Exception as e:
+        logger.error(f"Error updating status for {complaint_id}: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+@app.get("/api/properties")
+async def get_properties():
+    """Get all property tax records"""
+    db = SessionLocal()
+    try:
+        properties = db.query(PropertyTax).all()
+        return properties
+    finally:
+        db.close()
+
 # Custom 404 handler
 @app.exception_handler(StarletteHTTPException)
 async def not_found_handler(request: Request, exc: StarletteHTTPException):
@@ -195,6 +280,8 @@ async def not_found_handler(request: Request, exc: StarletteHTTPException):
             "valid_endpoints": [
                 "/",
                 "/webhook (GET for verification, POST for messages)",
+                "/api/complaints",
+                "/api/properties",
                 "/api/property-tax/pdf/{property_id}",
                 "/docs",
                 "/redoc"
@@ -204,4 +291,6 @@ async def not_found_handler(request: Request, exc: StarletteHTTPException):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    # uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    port = int(os.getenv("PORT", settings.PORT))
+    uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=settings.DEBUG)

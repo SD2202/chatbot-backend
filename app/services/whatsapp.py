@@ -34,4 +34,32 @@ class WhatsAppService:
                 logger.error(f"Error sending message: {e}")
                 return None
 
+    async def get_media_url(self, media_id: str) -> str:
+        """Get the actual URL for a media ID from WhatsApp API"""
+        url = f"https://graph.facebook.com/v18.0/{media_id}"
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(url, headers=self.headers)
+                response.raise_for_status()
+                data = response.json()
+                return data.get("url")
+            except Exception as e:
+                logger.error(f"Error getting media URL: {e}")
+                return None
+
+    async def download_media(self, media_url: str, save_path: str) -> bool:
+        """Download media from WhatsApp and save to disk"""
+        async with httpx.AsyncClient() as client:
+            try:
+                # Meta media URLs require the same auth header
+                response = await client.get(media_url, headers=self.headers)
+                response.raise_for_status()
+                with open(save_path, "wb") as f:
+                    f.write(response.content)
+                logger.info(f"Media downloaded and saved to: {save_path}")
+                return True
+            except Exception as e:
+                logger.error(f"Error downloading media: {e}")
+                return False
+
 whatsapp_service = WhatsAppService()

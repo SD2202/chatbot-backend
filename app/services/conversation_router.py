@@ -4,6 +4,7 @@ from app.services.complaint_templates import (
     get_category_name, get_sub_issues, get_solution, is_other_option
 )
 from app.services.translations import get_text
+from app.services.pdf_service import generate_property_tax_pdf
 from app.db.database import SessionLocal
 from app.db.models import User, Session as SessionModel, Complaint, PropertyTax, ComplaintStatus, TaxStatus
 from datetime import datetime
@@ -39,6 +40,10 @@ class ConversationRouter:
             return self._handle_login_start(phone_number)
         elif state == ConversationState.LANGUAGE_SELECTION:
             return self._handle_language_selection(phone_number, message_text)
+        elif state == ConversationState.WELCOME_SELECTION:
+            return self._handle_welcome_selection(phone_number, message_text, lang)
+        elif state == ConversationState.TRACKING_LOGIN_ID:
+            return self._handle_tracking_login_id(phone_number, message_text, lang)
         elif state == ConversationState.LOGIN_NAME:
             return self._handle_login_name(phone_number, message_text, lang)
         elif state == ConversationState.LOGIN_MOBILE:
@@ -79,10 +84,77 @@ class ConversationRouter:
         if choice in lang_map:
             selected_lang = lang_map[choice]
             conversation_manager.set_user_data(phone_number, language=selected_lang)
-            conversation_manager.update_state(phone_number, ConversationState.LOGIN_NAME)
-            return get_text("welcome", selected_lang)
+            conversation_manager.update_state(phone_number, ConversationState.WELCOME_SELECTION)
+            return get_text("welcome_options", selected_lang)
         else:
             return "Please reply with 1, 2, or 3.\n\n1. English\n2. Hindi\n3. Gujarati"
+
+    def _handle_welcome_selection(self, phone_number: str, choice: str, lang: str) -> str:
+        """Handle selection between New Complaint and Track Status"""
+        choice = choice.strip()
+        
+        if choice == "1":
+            # New Complaint -> Ask Name
+            conversation_manager.update_state(phone_number, ConversationState.LOGIN_NAME)
+            return get_text("welcome", lang)
+        elif choice == "2":
+            # Track Status -> Ask Login ID
+            conversation_manager.update_state(phone_number, ConversationState.TRACKING_LOGIN_ID)
+            return get_text("ask_login_id_track", lang)
+        else:
+            return get_text("invalid_choice", lang)
+
+    def _handle_tracking_login_id(self, phone_number: str, login_id_input: str, lang: str) -> str:
+        """Verify Login ID and fetch complaint status"""
+        login_id = login_id_input.strip()
+        session = conversation_manager.get_session(phone_number)
+        
+        db = self._get_db()
+        try:
+            # Check if login_id exists in User table
+            user = db.query(User).filter(User.login_id == login_id).first()
+            
+            if not user:
+                # Increment failed attempts
+                failed_attempts = session.get("failed_attempts", 0) + 1
+                conversation_manager.set_user_data(phone_number, failed_attempts=failed_attempts)
+                
+                if failed_attempts >= 3:
+                    conversation_manager.update_state(phone_number, ConversationState.TERMINATED)
+                    return get_text("too_many_attempts", lang)
+                
+                # Show remaining attempts
+                remaining = 3 - failed_attempts
+                error_msg = get_text("login_id_not_found", lang)
+                return f"{error_msg} (Attempts remaining: {remaining})"
+            
+            # Reset failed attempts on success
+            conversation_manager.set_user_data(phone_number, failed_attempts=0)
+            
+            # Fetch complaints for this user (login_id matches)
+            complaints = db.query(Complaint).filter(Complaint.login_id == login_id).all()
+            
+            if not complaints:
+                status_list = "No complaints found for this Login ID."
+            else:
+                lines = []
+                for c in complaints:
+                    status_text = c.status.value.replace("_", " ").title()
+                    # Emoji mapping based on status
+                    emoji = "⏳" if status_text == "Pending" else "✅" if status_text == "Resolved" else "🔧"
+                    lines.append(f"🆔 {c.complaint_id}: {emoji} {status_text} ({c.sub_issue})")
+                status_list = "\n".join(lines)
+            
+            # Update state to asking if they want anything else
+            # Reusing OTHER_ISSUES state logic which asks Yes/No
+            conversation_manager.update_state(phone_number, ConversationState.OTHER_ISSUES)
+            return get_text("track_status_result", lang, status_list=status_list)
+            
+        except Exception as e:
+            logger.error(f"Error fetching tracking info: {e}")
+            return get_text("error", lang)
+        finally:
+            db.close()
     
     def _handle_login_name(self, phone_number: str, name: str, lang: str) -> str:
         """Handle name input"""
@@ -263,7 +335,9 @@ class ConversationRouter:
                 category=session["current_category"],
                 sub_issue="Other",
                 description=description,
-                status=ComplaintStatus.PENDING
+                status=ComplaintStatus.PENDING,
+                latitude=session.get("location_lat"),
+                longitude=session.get("location_long")
             )
             db.add(complaint)
             db.commit()
@@ -322,7 +396,9 @@ class ConversationRouter:
                 category=session["current_category"],
                 sub_issue=session["current_sub_issue"],
                 image_url=session.get("image_url"),
-                status=ComplaintStatus.PENDING
+                status=ComplaintStatus.PENDING,
+                latitude=session.get("location_lat"),
+                longitude=session.get("location_long")
             )
             # Add location if available (schema update might be needed but for now models.py wasn't requested to change)
             # Assuming models might not have lat/long yet, ignoring for now or just saving in logs
@@ -355,7 +431,9 @@ class ConversationRouter:
                 category=session["current_category"],
                 sub_issue=session["current_sub_issue"],
                 image_url=session.get("image_url"),
-                status=ComplaintStatus.RESOLVED
+                status=ComplaintStatus.RESOLVED,
+                latitude=session.get("location_lat"),
+                longitude=session.get("location_long")
             )
             db.add(complaint)
             db.commit()
@@ -371,42 +449,45 @@ class ConversationRouter:
         finally:
             db.close()
     
-    def _handle_property_tax_input(self, phone_number: str, property_id: str, lang: str) -> str:
-        """Handle property tax query"""
-        # ... logic remains same but use get_text ...
-        session = conversation_manager.get_session(phone_number)
-        
+    def _handle_property_tax_input(self, phone_number: str, receipt_no: str, lang: str) -> str:
+        """Handle property tax query by receipt number"""
         db = self._get_db()
         try:
             tax_record = db.query(PropertyTax).filter(
-                PropertyTax.property_id == property_id.upper()
+                PropertyTax.receipt_no == receipt_no.strip().upper()
             ).first()
             
             if tax_record:
-                conversation_manager.set_user_data(phone_number, property_id=property_id)
-                conversation_manager.update_state(phone_number, ConversationState.PROPERTY_TAX_RESULT)
-                
                 status_emoji = {
                     "paid": "✅",
                     "due": "⚠️",
                     "pending": "⏳"
                 }
                 
-                # We can't easily translate dynamic DB content, but we can structure the response better or use templates
-                # For now keeping it simple English but wrapped
-                response = f"Property Tax Details:\n\n"
+                response = f"📋 *Property Tax Details*\n\n"
                 response += f"Property ID: {tax_record.property_id}\n"
-                # ... rest ...
+                response += f"Receipt No: {tax_record.receipt_no}\n"
+                response += f"Owner: {tax_record.owner_name}\n"
                 response += f"Amount: ₹{tax_record.amount}\n"
+                response += f"Status: {status_emoji.get(tax_record.status.value, '')} {tax_record.status.value.upper()}\n"
                 
-                pdf_url = f"/api/property-tax/pdf/{property_id}"
-                response += f"\n📄 PDF: {pdf_url}\n"
+                # Ensure PDF is generated
+                try:
+                    generate_property_tax_pdf(tax_record)
+                except Exception as e:
+                    logger.error(f"Failed to pre-generate PDF: {e}")
+
+                # Link to the static PDF file
+                pdf_filename = f"property_tax_{tax_record.property_id}.pdf"
+                pdf_url = f"http://localhost:8000/pdfs/{pdf_filename}"
+                
+                response += f"\n📄 *View/Download Receipt:*\n{pdf_url}\n"
                 
                 conversation_manager.update_state(phone_number, ConversationState.OTHER_ISSUES)
-                response += "\nDo you have any other issues? (Reply: Yes/No)" # Could be translated
+                response += "\nDo you have any other issues? (Reply: Yes/No)"
                 return response
             else:
-                return get_text("property_not_found", lang, property_id=property_id)
+                return get_text("property_not_found", lang, property_id=receipt_no)
         except Exception as e:
             logger.error(f"Error querying property tax: {e}")
             return get_text("error", lang)
@@ -421,13 +502,15 @@ class ConversationRouter:
         
         if any(v in response_lower for v in yes_variants):
             conversation_manager.update_state(phone_number, ConversationState.MAIN_MENU)
-            # Send main menu again
-            return self._handle_main_menu(phone_number, "INVALID_TRIGGER_SHOW_MENU", lang).replace(get_text("invalid_choice", lang), get_text("login_success", lang, login_id="...").split("\n\n")[2]) 
-            # This is a bit hacky, better to extract menu text. 
-            # Let's just hardcode the menu prompt for 'Yes' return
-            return get_text("login_success", lang, login_id=session["login_id"]).split("\n\nOther")[0] # Actually just use the menu part
-            # Simplified:
-            return get_text("login_success", lang, login_id="EXISTING").split("Please select")[1] if "Please select" in get_text("login_success", lang, login_id="X") else "Please select options..."
+            # Return translated main menu text (approximate reconstruction to avoid cyclic dep or complex refactor)
+            # Ideally calling _handle_login_area_ward's success part or extracting it
+            # For now, let's just grab the text for login_success and strip the top part or just use a new key?
+            # Keeping it simple: reuse login_success template but we lack login_id variable here easily?
+            # Actually we do have it in session.
+            session = conversation_manager.get_session(phone_number)
+            login_id = session.get("login_id", "N/A")
+            return get_text("login_success", lang, login_id=login_id)
+            
         elif any(v in response_lower for v in no_variants):
             conversation_manager.update_state(phone_number, ConversationState.TERMINATED)
             return get_text("terminate", lang)

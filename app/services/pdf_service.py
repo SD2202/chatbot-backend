@@ -58,7 +58,7 @@ def generate_property_tax_pdf(tax_record: PropertyTax) -> str:
             ["Owner Name:", tax_record.owner_name],
             ["Address:", tax_record.address],
             ["Year:", str(tax_record.year)],
-            ["Amount:", f"₹{tax_record.amount:,.2f}"],
+            ["Amount:", f"Rs. {tax_record.amount:,.2f}"],
             ["Status:", tax_record.status.value.upper()],
         ]
         
