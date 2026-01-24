@@ -124,12 +124,23 @@ async def handle_whatsapp_message(request: Request):
                     
                     # Send response
                     await whatsapp_service.send_text_message(from_number, response_text)
+
+                # Handle location messages
+                elif message_type == "location":
+                    location_data = message_data["location"]
+                    logger.info(f"Processing location from {from_number}: {location_data}")
+                    
+                    # Process location through conversation router
+                    response_text = conversation_router.process_message(from_number, "", location=location_data)
+                    
+                    # Send response
+                    await whatsapp_service.send_text_message(from_number, response_text)
                 
                 else:
                     logger.info(f"Unsupported message type: {message_type}")
                     await whatsapp_service.send_text_message(
                         from_number, 
-                        "Please send a text message or image."
+                        "Please send a text message, image, or location."
                     )
             
             # Handle status updates (delivered, read, etc.)

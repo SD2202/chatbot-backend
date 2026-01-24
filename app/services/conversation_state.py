@@ -7,15 +7,16 @@ import logging
 logger = logging.getLogger(__name__)
 
 class ConversationState(str, Enum):
+    LANGUAGE_SELECTION = "language_selection"
     LOGIN = "login"
     LOGIN_NAME = "login_name"
     LOGIN_MOBILE = "login_mobile"
-    LOGIN_AREA = "login_area"
-    LOGIN_WARD = "login_ward"
+    LOGIN_AREA_WARD = "login_area_ward"
     MAIN_MENU = "main_menu"
     CATEGORY_SELECTED = "category_selected"
     SUB_ISSUE_SELECTED = "sub_issue_selected"
     WAITING_IMAGE = "waiting_image"
+    WAITING_LOCATION = "waiting_location"
     WAITING_DESCRIPTION = "waiting_description"
     WAITING_SOLUTION_CONFIRMATION = "waiting_solution_confirmation"
     WAITING_RESOLUTION_CONFIRMATION = "waiting_resolution_confirmation"
