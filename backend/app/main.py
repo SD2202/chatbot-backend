@@ -13,6 +13,7 @@ import logging
 import os
 from datetime import datetime
 
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -34,9 +35,15 @@ app.mount("/pdfs", StaticFiles(directory=settings.PDF_DIR), name="pdfs")
 # Enable CORS for frontend
 # Parse CORS origins from settings
 cors_origins = [origin.strip() for origin in settings.CORS_ORIGINS.split(",")] if settings.CORS_ORIGINS else ["*"]
+
 # Add frontend URL if specified
 if settings.FRONTEND_URL and settings.FRONTEND_URL not in cors_origins:
     cors_origins.append(settings.FRONTEND_URL)
+
+# Ensure Netlify frontend is allowed
+netlify_frontend = "https://vmcbot.netlify.app"
+if netlify_frontend not in cors_origins:
+    cors_origins.append(netlify_frontend)
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,7 +64,6 @@ app.add_middleware(
     expose_headers=["*"],
     max_age=3600,
 )
-
 # Initialize conversation router
 conversation_router = ConversationRouter()
 
@@ -342,3 +348,4 @@ if __name__ == "__main__":
     # uvicorn app.main:app --host 0.0.0.0 --port $PORT
     port = int(os.getenv("PORT", settings.PORT))
     uvicorn.run("app.main:app", host="0.0.0.0", port=port, reload=settings.DEBUG)
+
