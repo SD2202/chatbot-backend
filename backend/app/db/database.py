@@ -7,7 +7,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Create MariaDB connection string
-DATABASE_URL = f"mysql+pymysql://{settings.DB_USER}:{settings.DB_PASSWORD}@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}"
+DATABASE_URL = f"postgresql+psycopg2://{settings.DB_USER}:{settings.DB_PASSWORD}@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}"
 
 engine = create_engine(
     DATABASE_URL,
@@ -82,3 +82,4 @@ def seed_data():
         db.rollback()
     finally:
         db.close()
+
